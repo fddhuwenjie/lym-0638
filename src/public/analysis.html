@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>跨币种认领风险与汇兑损益分析中心</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:#f0f2f5;color:#333;min-height:100vh}
+.header{background:linear-gradient(135deg,#1a3a5c 0%,#2d6a9f 100%);color:#fff;padding:20px 32px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:22px;font-weight:600}
+.header .sub{font-size:13px;opacity:.8;margin-top:4px}
+.filter-bar{background:#fff;padding:16px 24px;margin:16px 24px 0;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.filter-bar .row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.filter-bar label{font-size:12px;color:#666;display:block;margin-bottom:4px}
+.filter-bar select,.filter-bar input{height:32px;border:1px solid #d9d9d9;border-radius:4px;padding:0 8px;font-size:13px;min-width:120px;background:#fff}
+.filter-bar select:focus,.filter-bar input:focus{outline:none;border-color:#2d6a9f;box-shadow:0 0 0 2px rgba(45,106,159,.2)}
+.btn{height:32px;padding:0 16px;border:none;border-radius:4px;font-size:13px;cursor:pointer;transition:all .2s}
+.btn-primary{background:#2d6a9f;color:#fff}.btn-primary:hover{background:#1a3a5c}
+.btn-export{background:#52c41a;color:#fff}.btn-export:hover{background:#389e0d}
+.btn-reset{background:#fff;border:1px solid #d9d9d9;color:#666}.btn-reset:hover{color:#2d6a9f;border-color:#2d6a9f}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 24px}
+.stat-card{background:#fff;border-radius:8px;padding:16px 20px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.stat-card .label{font-size:12px;color:#999;margin-bottom:6px}
+.stat-card .value{font-size:22px;font-weight:700;color:#1a3a5c}
+.stat-card .value.red{color:#cf1322}
+.stat-card .value.green{color:#389e0d}
+.stat-card .value.orange{color:#d46b08}
+.main-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 24px}
+.panel{background:#fff;border-radius:8px;padding:16px 20px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.panel-title{font-size:15px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}
+.panel-title .badge{font-size:11px;background:#e6f7ff;color:#2d6a9f;padding:2px 8px;border-radius:10px}
+.full-width{grid-column:1/-1}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#fafafa;text-align:left;padding:8px 10px;font-weight:600;color:#666;border-bottom:1px solid #f0f0f0;white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid #f5f5f5;white-space:nowrap}
+tr:hover td{background:#f9fbfd}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:500}
+.tag-gain{background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f}
+.tag-loss{background:#fff2f0;color:#cf1322;border:1px solid #ffa39e}
+.tag-pending{background:#fff7e6;color:#d46b08;border:1px solid #ffd591}
+.tag-processed{background:#e6f7ff;color:#2d6a9f;border:1px solid #91d5ff}
+.clickable{color:#2d6a9f;cursor:pointer;text-decoration:underline}.clickable:hover{color:#1a3a5c}
+.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal{background:#fff;border-radius:8px;width:96%;max-width:1200px;max-height:85vh;display:flex;flex-direction:column}
+.modal-header{padding:16px 24px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}
+.modal-header h3{font-size:16px;font-weight:600}
+.modal-close{width:28px;height:28px;border:none;background:none;font-size:18px;cursor:pointer;color:#999;border-radius:4px}.modal-close:hover{background:#f5f5f5;color:#333}
+.modal-body{padding:16px 24px;overflow:auto;flex:1}
+.empty-state{text-align:center;padding:32px;color:#bbb;font-size:13px}
+.loading{text-align:center;padding:24px;color:#999}
+.chart-container{width:100%;height:300px}
+.table-wrap{overflow-x:auto}
+@media(max-width:768px){.main-grid{grid-template-columns:1fr}.filter-bar .row{flex-direction:column}.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <h1>跨币种认领风险与汇兑损益分析中心</h1>
+    <div class="sub">基于回单、应收单、认领、汇率、汇兑差异与异常挂账的综合分析</div>
+  </div>
+  <div>
+    <button class="btn btn-export" onclick="exportData()">📥 导出当前筛选结果</button>
+  </div>
+</div>
+
+<div class="filter-bar">
+  <div class="row">
+    <div><label>客户</label><select id="f_customer"><option value="">全部客户</option></select></div>
+    <div><label>回单币种</label><select id="f_receiptCurrency"><option value="">全部</option></select></div>
+    <div><label>应收币种</label><select id="f_receivableCurrency"><option value="">全部</option></select></div>
+    <div><label>结算币种</label><select id="f_settlementCurrency"><option value="">全部</option></select></div>
+    <div><label>开始日期</label><input type="date" id="f_startDate"></div>
+    <div><label>结束日期</label><input type="date" id="f_endDate"></div>
+    <div><label>差异处理状态</label><select id="f_diffStatus"><option value="">全部</option></select></div>
+    <div><label>挂账状态</label><select id="f_hangingStatus"><option value="">全部</option></select></div>
+    <div><button class="btn btn-primary" onclick="refreshAll()">查询</button> <button class="btn btn-reset" onclick="resetFilters()">重置</button></div>
+  </div>
+</div>
+
+<div class="stats" id="statsArea"></div>
+
+<div class="main-grid">
+  <div class="panel">
+    <div class="panel-title">客户维度排行 <span class="badge" id="rankBadge">0 家客户</span></div>
+    <div class="table-wrap"><table><thead><tr><th>排名</th><th>客户名称</th><th>跨币种认领额</th><th>本位币认领额</th><th>汇兑差异</th><th>待处理差异</th><th>操作</th></tr></thead><tbody id="rankBody"></tbody></table></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">币种组合分布</div>
+    <div id="currencyChart" class="chart-container"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">每日汇兑差异趋势</div>
+    <div id="trendChart" class="chart-container"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">异常挂账明细 <span class="badge" id="hangBadge">0 条</span></div>
+    <div class="table-wrap"><table><thead><tr><th>挂账ID</th><th>回单号</th><th>客户</th><th>回单金额</th><th>币种</th><th>原因</th><th>状态</th><th>创建时间</th></tr></thead><tbody id="hangBody"></tbody></table></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="customerModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">客户认领详情</h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="table-wrap"><table><thead><tr><th>回单号</th><th>回单原币金额</th><th>回单币种</th><th>回单本位币金额</th><th>应收单号</th><th>应收原币金额</th><th>应收币种</th><th>应收本位币金额</th><th>使用汇率</th><th>认领金额</th><th>认领币种</th><th>本位币金额</th><th>剩余本位币</th><th>汇兑差异</th><th>差异类型</th><th>处理状态</th><th>处理人</th><th>处理结果</th><th>认领时间</th></tr></thead><tbody id="detailBody"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api/analysis';
+let currencyChartInstance = null;
+let trendChartInstance = null;
+
+function getFilters() {
+  return {
+    customerId: document.getElementById('f_customer').value,
+    receiptCurrency: document.getElementById('f_receiptCurrency').value,
+    receivableCurrency: document.getElementById('f_receivableCurrency').value,
+    settlementCurrency: document.getElementById('f_settlementCurrency').value,
+    startDate: document.getElementById('f_startDate').value,
+    endDate: document.getElementById('f_endDate').value,
+    diffStatus: document.getElementById('f_diffStatus').value,
+    hangingStatus: document.getElementById('f_hangingStatus').value
+  };
+}
+
+function buildQuery(filters) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => { if (v) params.append(k, v); });
+  return params.toString();
+}
+
+async function apiGet(endpoint, filters = {}) {
+  const q = buildQuery(filters);
+  const url = `${API_BASE}${endpoint}${q ? '?' + q : ''}`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.code !== 0) throw new Error(json.message);
+  return json.data;
+}
+
+async function loadFilterOptions() {
+  const data = await apiGet('/filter-options');
+  const cSel = document.getElementById('f_customer');
+  data.customers.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.customerId;
+    opt.textContent = c.customerName;
+    cSel.appendChild(opt);
+  });
+  ['receiptCurrencies', 'receivableCurrencies', 'settlementCurrencies'].forEach((key, i) => {
+    const ids = ['f_receiptCurrency', 'f_receivableCurrency', 'f_settlementCurrency'];
+    const sel = document.getElementById(ids[i]);
+    data[key].forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      sel.appendChild(opt);
+    });
+  });
+  const dsSel = document.getElementById('f_diffStatus');
+  data.diffStatuses.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s === 'pending' ? '待处理' : '已处理'; dsSel.appendChild(o); });
+  const hsSel = document.getElementById('f_hangingStatus');
+  data.hangingStatuses.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s === 'pending' ? '待处理' : '已处理'; hsSel.appendChild(o); });
+}
+
+function fmtMoney(v, cur) {
+  const n = Number(v);
+  if (isNaN(n)) return v || '-';
+  const formatted = n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return cur ? `${cur} ${formatted}` : formatted;
+}
+
+function diffTag(type) {
+  if (type === 'gain') return '<span class="tag tag-gain">汇兑收益</span>';
+  if (type === 'loss') return '<span class="tag tag-loss">汇兑损失</span>';
+  return '<span class="tag">无差异</span>';
+}
+
+function statusTag(status) {
+  if (status === 'pending') return '<span class="tag tag-pending">待处理</span>';
+  if (status === 'processed') return '<span class="tag tag-processed">已处理</span>';
+  return status || '-';
+}
+
+function renderStats(data) {
+  const items = [
+    { label: '跨币种认领总额', value: fmtMoney(data.crossCurrencyClaimTotal), cls: '' },
+    { label: '本位币认领总额 (CNY)', value: fmtMoney(data.baseCurrencyClaimTotal), cls: '' },
+    { label: '未处理汇兑差异金额', value: fmtMoney(data.unprocessedDiffAmount), cls: 'orange' },
+    { label: '已确认汇兑收益', value: fmtMoney(data.confirmedGain), cls: 'green' },
+    { label: '已确认汇兑损失', value: fmtMoney(data.confirmedLoss), cls: 'red' },
+    { label: '异常挂账数量', value: data.abnormalHangingCount, cls: 'orange' },
+    { label: '部分认领应收单', value: data.partialReceivableCount, cls: '' },
+    { label: '已结清应收单', value: data.settledReceivableCount, cls: 'green' }
+  ];
+  document.getElementById('statsArea').innerHTML = items.map(it =>
+    `<div class="stat-card"><div class="label">${it.label}</div><div class="value ${it.cls}">${it.value}</div></div>`
+  ).join('');
+}
+
+function renderRanking(data) {
+  document.getElementById('rankBadge').textContent = `${data.length} 家客户`;
+  const tbody = document.getElementById('rankBody');
+  if (!data.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无数据</td></tr>'; return; }
+  tbody.innerHTML = data.map((c, i) =>
+    `<tr><td>${i + 1}</td><td>${c.customerName}</td><td>${fmtMoney(c.crossCurrencyTotal)}</td><td>${fmtMoney(c.baseCurrencyTotal)}</td><td>${fmtMoney(c.diffAmount)}</td><td>${c.pendingDiffCount}</td><td><span class="clickable" onclick="openCustomerDetail('${c.customerId || c.customerName}')">查看详情</span></td></tr>`
+  ).join('');
+}
+
+function renderCurrencyChart(data) {
+  if (!data.length) { document.getElementById('currencyChart').innerHTML = '<div class="empty-state">暂无数据</div>'; return; }
+  if (!currencyChartInstance) {
+    currencyChartInstance = echarts.init(document.getElementById('currencyChart'));
+  }
+  const names = data.map(d => `${d.receiptCurrency} → ${d.receivableCurrency}`);
+  currencyChartInstance.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['本位币金额', '原币金额'] },
+    grid: { left: 80, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: names, axisLabel: { rotate: 20, fontSize: 11 } },
+    yAxis: { type: 'value', axisLabel: { formatter: v => (v >= 10000 ? (v/10000).toFixed(0) + '万' : v) } },
+    series: [
+      { name: '本位币金额', type: 'bar', data: data.map(d => Number(d.baseAmount)), itemStyle: { color: '#2d6a9f' } },
+      { name: '原币金额', type: 'bar', data: data.map(d => Number(d.originalAmount)), itemStyle: { color: '#91d5ff' } }
+    ]
+  });
+}
+
+function renderTrendChart(data) {
+  if (!data.length) { document.getElementById('trendChart').innerHTML = '<div class="empty-state">暂无数据</div>'; return; }
+  if (!trendChartInstance) {
+    trendChartInstance = echarts.init(document.getElementById('trendChart'));
+  }
+  const dates = data.map(d => d.date);
+  trendChartInstance.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['汇兑收益', '汇兑损失', '净差异'] },
+    grid: { left: 80, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: dates },
+    yAxis: { type: 'value', axisLabel: { formatter: v => (Math.abs(v) >= 10000 ? (v/10000).toFixed(1) + '万' : v) } },
+    series: [
+      { name: '汇兑收益', type: 'line', data: data.map(d => Number(d.gainAmount)), itemStyle: { color: '#52c41a' }, areaStyle: { color: 'rgba(82,196,26,.1)' } },
+      { name: '汇兑损失', type: 'line', data: data.map(d => Number(d.lossAmount)), itemStyle: { color: '#cf1322' }, areaStyle: { color: 'rgba(207,19,34,.1)' } },
+      { name: '净差异', type: 'line', data: data.map(d => Number(d.totalDiffAmount)), itemStyle: { color: '#2d6a9f' }, lineStyle: { type: 'dashed' } }
+    ]
+  });
+}
+
+function renderHangings(data) {
+  document.getElementById('hangBadge').textContent = `${data.length} 条`;
+  const tbody = document.getElementById('hangBody');
+  if (!data.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无异常挂账</td></tr>'; return; }
+  tbody.innerHTML = data.map(h =>
+    `<tr><td>${h.hangingId}</td><td>${h.receiptNo}</td><td>${h.customerName}</td><td>${fmtMoney(h.receiptAmount)}</td><td>${h.receiptCurrency}</td><td title="${h.reason}">${(h.reason || '').slice(0, 20)}${(h.reason || '').length > 20 ? '...' : ''}</td><td>${statusTag(h.status)}</td><td>${h.createdAt}</td></tr>`
+  ).join('');
+}
+
+async function refreshAll() {
+  const filters = getFilters();
+  try {
+    const [overview, ranking, currencyDist, trend, hangings] = await Promise.all([
+      apiGet('/overview', filters),
+      apiGet('/customer-ranking', filters),
+      apiGet('/currency-distribution', filters),
+      apiGet('/diff-trend', filters),
+      apiGet('/hanging-details', filters)
+    ]);
+    renderStats(overview);
+    renderRanking(ranking);
+    renderCurrencyChart(currencyDist);
+    renderTrendChart(trend);
+    renderHangings(hangings);
+  } catch (e) {
+    console.error('加载分析数据失败:', e);
+  }
+}
+
+function resetFilters() {
+  ['f_customer','f_receiptCurrency','f_receivableCurrency','f_settlementCurrency','f_diffStatus','f_hangingStatus'].forEach(id => document.getElementById(id).value = '');
+  ['f_startDate','f_endDate'].forEach(id => document.getElementById(id).value = '');
+  refreshAll();
+}
+
+async function openCustomerDetail(customerId) {
+  document.getElementById('modalTitle').textContent = `客户认领详情 - ${customerId}`;
+  document.getElementById('customerModal').classList.add('active');
+  const filters = getFilters();
+  try {
+    const data = await apiGet(`/customer/${encodeURIComponent(customerId)}/claims`, filters);
+    const tbody = document.getElementById('detailBody');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="19" class="empty-state">暂无认领记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(d => {
+      const procResult = d.processResult ? (() => { try { return JSON.parse(d.processResult).description || d.processResult; } catch { return d.processResult; } })() : '-';
+      return `<tr>
+        <td>${d.receiptNo}</td>
+        <td>${fmtMoney(d.receiptOriginalAmount)}</td>
+        <td>${d.receiptCurrency}</td>
+        <td>${fmtMoney(d.receiptBaseAmount)}</td>
+        <td>${d.receivableNo}</td>
+        <td>${fmtMoney(d.receivableOriginalAmount)}</td>
+        <td>${d.receivableCurrency}</td>
+        <td>${fmtMoney(d.receivableBaseAmount)}</td>
+        <td>${d.exchangeRate || '-'}</td>
+        <td>${fmtMoney(d.claimOriginalAmount)}</td>
+        <td>${d.claimCurrency}</td>
+        <td>${fmtMoney(d.claimBaseAmount)}</td>
+        <td>${fmtMoney(d.remainingBaseAmount)}</td>
+        <td>${d.exchangeDiffAmount != null ? fmtMoney(d.exchangeDiffAmount) : '-'}</td>
+        <td>${d.exchangeDiffType ? diffTag(d.exchangeDiffType) : '-'}</td>
+        <td>${d.exchangeDiffStatus ? statusTag(d.exchangeDiffStatus) : '-'}</td>
+        <td>${d.processedBy || '-'}</td>
+        <td title="${procResult}">${procResult.toString().slice(0, 15)}</td>
+        <td>${d.createdAt}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('detailBody').innerHTML = `<tr><td colspan="19" class="empty-state">加载失败: ${e.message}</td></tr>`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('customerModal').classList.remove('active');
+}
+
+async function exportData() {
+  const filters = getFilters();
+  try {
+    const res = await fetch(`${API_BASE}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...filters, operator: 'web_user' })
+    });
+    const json = await res.json();
+    if (json.code !== 0) throw new Error(json.message);
+    const data = json.data;
+    let content = '===== 跨币种认领风险与汇兑损益分析报告 =====\n\n';
+    content += '--- 筛选条件 ---\n';
+    Object.entries(data.filterSummary).forEach(([k, v]) => { if (v) content += `${k}: ${v}\n`; });
+    content += '\n--- 统计概览 ---\n';
+    Object.entries(data.overview).forEach(([k, v]) => { content += `${k}: ${v}\n`; });
+    content += '\n--- 客户排行 ---\n';
+    data.customerRanking.forEach((c, i) => {
+      content += `${i+1}. ${c.customerName} | 跨币种: ${c.crossCurrencyTotal} | 本位币: ${c.baseCurrencyTotal} | 差异: ${c.diffAmount} | 待处理: ${c.pendingDiffCount}\n`;
+    });
+    content += '\n--- 币种组合分布 ---\n';
+    data.currencyDistribution.forEach(c => {
+      content += `${c.receiptCurrency}→${c.receivableCurrency} | 笔数: ${c.claimCount} | 原币: ${c.originalAmount} | 本位币: ${c.baseAmount}\n`;
+    });
+    content += '\n--- 每日汇兑差异趋势 ---\n';
+    data.dailyTrend.forEach(d => {
+      content += `${d.date} | 收益: ${d.gainAmount} | 损失: ${d.lossAmount} | 净额: ${d.totalDiffAmount} | 待处理: ${d.pendingCount}\n`;
+    });
+    content += '\n--- 异常挂账明细 ---\n';
+    data.hangingDetails.forEach(h => {
+      content += `${h.hangingId} | ${h.receiptNo} | ${h.customerName} | ${h.receiptAmount} ${h.receiptCurrency} | ${h.status} | ${h.reason}\n`;
+    });
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `analysis_report_${new Date().toISOString().slice(0,10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('导出失败: ' + e.message);
+  }
+}
+
+document.getElementById('customerModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+window.addEventListener('resize', () => {
+  if (currencyChartInstance) currencyChartInstance.resize();
+  if (trendChartInstance) trendChartInstance.resize();
+});
+
+(async function init() {
+  await loadFilterOptions();
+  await refreshAll();
+})();
+</script>
+</body>
+</html>

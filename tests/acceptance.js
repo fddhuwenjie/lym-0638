@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const ReceiptService = require('../src/services/receipt-service');
+const AnalysisService = require('../src/services/analysis-service');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 
@@ -439,6 +440,137 @@ async function runTests() {
     assert(crossClaimAfter.amount === '10000.00', '重启后认领原币金额应保持');
     assert(crossClaimAfter.baseAmount === '72500.00', '重启后认领本位币金额应保持');
     console.log('  ✅ 重启后数据一致: 汇率、认领、汇兑差异、导出记录、应收余额全部保留');
+    console.log('');
+
+    console.log('【场景十八】跨币种分析中心 - 统计概览');
+    const analysis = new AnalysisService();
+    const overview = analysis.getOverview();
+    console.log(`  跨币种认领总额: ${overview.crossCurrencyClaimTotal}`);
+    console.log(`  本位币认领总额: ${overview.baseCurrencyClaimTotal}`);
+    console.log(`  未处理汇兑差异: ${overview.unprocessedDiffAmount}`);
+    console.log(`  已确认汇兑收益: ${overview.confirmedGain}`);
+    console.log(`  已确认汇兑损失: ${overview.confirmedLoss}`);
+    console.log(`  异常挂账数量: ${overview.abnormalHangingCount}`);
+    console.log(`  部分认领应收单: ${overview.partialReceivableCount}`);
+    console.log(`  已结清应收单: ${overview.settledReceivableCount}`);
+    assert(Number(overview.baseCurrencyClaimTotal) > 0, '本位币认领总额应大于0');
+    assert(Number(overview.crossCurrencyClaimTotal) > 0, '跨币种认领总额应大于0');
+    assert(Number(overview.confirmedLoss) < 0, '已确认汇兑损失应为负数');
+    assert(overview.totalClaimCount > 0, '认领总数应大于0');
+    assert(overview.customerCount > 0, '客户数应大于0');
+    console.log('');
+
+    console.log('【场景十九】分析中心 - 客户维度排行');
+    const ranking = analysis.getCustomerRanking();
+    assert(ranking.length > 0, '客户排行应有数据');
+    console.log(`  排行客户数: ${ranking.length}`);
+    ranking.forEach((c, i) => {
+      console.log(`    ${i + 1}. ${c.customerName}: 跨币种 ${c.crossCurrencyTotal}, 本位币 ${c.baseCurrencyTotal}, 差异 ${c.diffAmount}`);
+    });
+    const appleRank = ranking.find(c => c.customerName === '苹果公司');
+    assert(appleRank, '苹果公司应在排行中');
+    assert(Number(appleRank.crossCurrencyTotal) > 0, '苹果公司跨币种认领额应大于0');
+    console.log('');
+
+    console.log('【场景二十】分析中心 - 币种组合分布');
+    const currencyDist = analysis.getCurrencyDistribution();
+    assert(currencyDist.length > 0, '币种组合应有数据');
+    const usdCny = currencyDist.find(c => c.receiptCurrency === 'USD' && c.receivableCurrency === 'CNY');
+    assert(usdCny, '应有 USD→CNY 组合');
+    assert(Number(usdCny.baseAmount) > 0, 'USD→CNY 组合本位币金额应大于0');
+    console.log(`  币种组合数: ${currencyDist.length}`);
+    currencyDist.forEach(c => {
+      console.log(`    ${c.receiptCurrency} → ${c.receivableCurrency}: ${c.claimCount}笔, 本位币 ${c.baseAmount}`);
+    });
+    console.log('');
+
+    console.log('【场景二十一】分析中心 - 每日汇兑差异趋势');
+    const trend = analysis.getDailyDiffTrend();
+    console.log(`  趋势天数: ${trend.length}`);
+    if (trend.length > 0) {
+      trend.forEach(t => {
+        console.log(`    ${t.date}: 收益 ${t.gainAmount}, 损失 ${t.lossAmount}, 净额 ${t.totalDiffAmount}, 待处理 ${t.pendingCount}`);
+      });
+    }
+    console.log('');
+
+    console.log('【场景二十二】分析中心 - 异常挂账明细');
+    const hangingDetails = analysis.getHangingDetails();
+    console.log(`  挂账明细数: ${hangingDetails.length}`);
+    hangingDetails.forEach(h => {
+      console.log(`    ${h.hangingId}: ${h.receiptNo} ${h.customerName} ${h.receiptCurrency} ${h.receiptAmount} - ${h.status}`);
+    });
+    console.log('');
+
+    console.log('【场景二十三】分析中心 - 客户详情（苹果公司）');
+    const appleDetails = analysis.getCustomerClaimDetails('C004');
+    assert(appleDetails.length >= 2, '苹果公司应至少有2条认领记录');
+    const usdDetail = appleDetails.find(d => d.receiptCurrency === 'USD' && d.receivableCurrency === 'CNY');
+    assert(usdDetail, '应有 USD→CNY 跨币种认领详情');
+    assert(usdDetail.receiptOriginalAmount, '回单原币金额应存在');
+    assert(usdDetail.receiptBaseAmount, '回单本位币金额应存在');
+    assert(usdDetail.receivableOriginalAmount, '应收原币金额应存在');
+    assert(usdDetail.receivableBaseAmount, '应收本位币金额应存在');
+    assert(usdDetail.exchangeRate, '使用汇率应存在');
+    assert(usdDetail.claimOriginalAmount, '认领金额应存在');
+    assert(usdDetail.remainingBaseAmount, '剩余本位币金额应存在');
+    console.log(`  苹果公司认领记录: ${appleDetails.length} 条`);
+    appleDetails.forEach(d => {
+      console.log(`    ${d.receiptNo}→${d.receivableNo}: 原币 ${d.claimOriginalAmount} ${d.claimCurrency}, 本位币 ${d.claimBaseAmount}, 汇率 ${d.exchangeRate}, 差异 ${d.exchangeDiffAmount || '-'}`);
+    });
+    console.log('');
+
+    console.log('【场景二十四】分析中心 - 筛选条件组合');
+    const usdFilterResult = analysis.getOverview({ receiptCurrency: 'USD' });
+    assert(Number(usdFilterResult.crossCurrencyClaimTotal) > 0, '按USD筛选后跨币种总额应大于0');
+    console.log(`  仅USD回单: 跨币种 ${usdFilterResult.crossCurrencyClaimTotal}, 本位币 ${usdFilterResult.baseCurrencyClaimTotal}`);
+
+    const appleOnly = analysis.getOverview({ customerId: 'C004' });
+    assert(Number(appleOnly.baseCurrencyClaimTotal) > 0, '按苹果公司筛选后本位币总额应大于0');
+    console.log(`  仅苹果公司: 跨币种 ${appleOnly.crossCurrencyClaimTotal}, 本位币 ${appleOnly.baseCurrencyClaimTotal}`);
+
+    const usdCnyRanking = analysis.getCustomerRanking({ receiptCurrency: 'USD', receivableCurrency: 'CNY' });
+    assert(usdCnyRanking.length > 0, 'USD→CNY 筛选后排行应有数据');
+    console.log(`  USD→CNY 客户排行: ${usdCnyRanking.length} 家`);
+
+    const processedDiffOverview = analysis.getOverview({ diffStatus: 'processed' });
+    assert(Number(processedDiffOverview.confirmedGain) >= 0, '已处理差异筛选后收益应>=0');
+    console.log(`  已处理差异: 收益 ${processedDiffOverview.confirmedGain}, 损失 ${processedDiffOverview.confirmedLoss}`);
+    console.log('');
+
+    console.log('【场景二十五】分析中心 - 导出（含筛选条件摘要）');
+    const exported = analysis.exportAnalysis({ receiptCurrency: 'USD', operator: 'finance_01' });
+    assert(exported.exportId, '导出ID应存在');
+    assert(exported.filterSummary.receiptCurrency === 'USD', '筛选条件摘要应保留');
+    assert(exported.overview, '统计概览应存在');
+    assert(exported.customerRanking, '客户排行应存在');
+    assert(exported.currencyDistribution, '币种分布应存在');
+    assert(exported.dailyTrend !== undefined, '每日趋势应存在');
+    assert(exported.hangingDetails, '挂账明细应存在');
+    console.log(`  导出ID: ${exported.exportId}`);
+    console.log(`  筛选条件: receiptCurrency=${exported.filterSummary.receiptCurrency}`);
+    console.log(`  统计概览: 跨币种 ${exported.overview.crossCurrencyClaimTotal}, 本位币 ${exported.overview.baseCurrencyClaimTotal}`);
+    console.log('');
+
+    console.log('【场景二十六】分析中心 - 筛选选项与重启验证');
+    const filterOpts = analysis.getFilterOptions();
+    assert(filterOpts.customers.length > 0, '客户列表应非空');
+    assert(filterOpts.receiptCurrencies.includes('USD'), '回单币种应包含 USD');
+    assert(filterOpts.receivableCurrencies.includes('CNY'), '应收币种应包含 CNY');
+    assert(filterOpts.diffStatuses.includes('pending'), '差异状态应包含 pending');
+    assert(filterOpts.diffStatuses.includes('processed'), '差异状态应包含 processed');
+    console.log(`  客户数: ${filterOpts.customers.length}, 回单币种: ${filterOpts.receiptCurrencies.join(',')}, 应收币种: ${filterOpts.receivableCurrencies.join(',')}`);
+
+    console.log('  重启后分析数据重新计算验证 ...');
+    const analysis2 = new AnalysisService();
+    const overview2 = analysis2.getOverview();
+    assert(overview2.crossCurrencyClaimTotal === overview.crossCurrencyClaimTotal, '重启后跨币种总额应一致');
+    assert(overview2.baseCurrencyClaimTotal === overview.baseCurrencyClaimTotal, '重启后本位币总额应一致');
+    assert(overview2.confirmedLoss === overview.confirmedLoss, '重启后已确认损失应一致');
+    assert(overview2.settledReceivableCount === overview.settledReceivableCount, '重启后已结清应收单数应一致');
+    const appleDetails2 = analysis2.getCustomerClaimDetails('C004');
+    assert(appleDetails2.length === appleDetails.length, '重启后客户详情记录数应一致');
+    console.log('  ✅ 重启后分析结果基于持久化数据重新计算，数据一致');
     console.log('');
 
     console.log('================================================');

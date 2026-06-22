@@ -1,8 +1,10 @@
 const express = require('express');
 const ReceiptService = require('../services/receipt-service');
+const AnalysisService = require('../services/analysis-service');
 
 const router = express.Router();
 const service = new ReceiptService();
+const analysisService = new AnalysisService();
 
 function wrap(handler) {
   return async (req, res) => {
@@ -138,6 +140,37 @@ router.post('/exchange-diffs/:diffId/process', wrap(req => {
     diffId: req.params.diffId,
     action, operator, remark
   });
+}));
+
+router.get('/analysis/filter-options', wrap(() => analysisService.getFilterOptions()));
+
+router.get('/analysis/overview', wrap(req => {
+  return analysisService.getOverview(req.query);
+}));
+
+router.get('/analysis/customer-ranking', wrap(req => {
+  return analysisService.getCustomerRanking(req.query);
+}));
+
+router.get('/analysis/currency-distribution', wrap(req => {
+  return analysisService.getCurrencyDistribution(req.query);
+}));
+
+router.get('/analysis/diff-trend', wrap(req => {
+  return analysisService.getDailyDiffTrend(req.query);
+}));
+
+router.get('/analysis/hanging-details', wrap(req => {
+  return analysisService.getHangingDetails(req.query);
+}));
+
+router.get('/analysis/customer/:customerId/claims', wrap(req => {
+  return analysisService.getCustomerClaimDetails(req.params.customerId, req.query);
+}));
+
+router.post('/analysis/export', wrap(req => {
+  const { customerId, receiptCurrency, receivableCurrency, settlementCurrency, startDate, endDate, diffStatus, hangingStatus, operator } = req.body;
+  return analysisService.exportAnalysis({ customerId, receiptCurrency, receivableCurrency, settlementCurrency, startDate, endDate, diffStatus, hangingStatus, operator });
 }));
 
 module.exports = router;

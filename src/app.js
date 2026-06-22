@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const apiRoutes = require('./routes/api');
 
 const app = express();
@@ -14,6 +15,8 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api', apiRoutes);
 
