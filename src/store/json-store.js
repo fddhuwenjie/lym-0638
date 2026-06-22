@@ -11,6 +11,8 @@ class JsonStore {
       claims: 'claims.json',
       hangings: 'hangings.json',
       exports: 'exports.json',
+      exchangeRates: 'exchange-rates.json',
+      exchangeDiffs: 'exchange-diffs.json',
       seq: 'seq.json'
     };
     this._ensureDir();

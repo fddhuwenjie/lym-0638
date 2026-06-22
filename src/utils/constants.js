@@ -1,5 +1,32 @@
 const dayjs = require('dayjs');
 
+const BASE_CURRENCY = 'CNY';
+
+const CURRENCIES = {
+  CNY: 'CNY',
+  USD: 'USD',
+  EUR: 'EUR',
+  HKD: 'HKD',
+  JPY: 'JPY',
+  GBP: 'GBP'
+};
+
+const EXCHANGE_RATE_SOURCE = {
+  IMPORT: 'import',
+  MANUAL: 'manual'
+};
+
+const EXCHANGE_DIFF_STATUS = {
+  PENDING: 'pending',
+  PROCESSED: 'processed'
+};
+
+const EXCHANGE_DIFF_TYPE = {
+  GAIN: 'gain',
+  LOSS: 'loss',
+  NONE: 'none'
+};
+
 const RECEIPT_STATUS = {
   PENDING: 'pending',
   PARTIAL: 'partial',
@@ -27,10 +54,34 @@ const CLAIM_ERRORS = {
   CUSTOMER_MISMATCH: '客户不匹配',
   RECEIVABLE_PAID: '应收单已结清，不能再次认领',
   RECEIPT_CLOSED: '回单已关闭，不能认领',
-  HANGING_UNPROCESSED: '存在未处理的异常挂账，不能关闭/结清'
+  HANGING_UNPROCESSED: '存在未处理的异常挂账，不能关闭/结清',
+  CURRENCY_MISMATCH: '币种不匹配',
+  EXCHANGE_RATE_REQUIRED: '非本位币需要指定汇率',
+  AMOUNT_MISMATCH: '原币金额与本位币金额不匹配'
 };
 
-function validateClaimInput({ receipt, receivable, amount, existingClaims, sameReceivableClaims }) {
+function toBaseCurrency(foreignAmount, exchangeRate, currency) {
+  if (currency === BASE_CURRENCY) return Number(foreignAmount).toFixed(2);
+  return (Number(foreignAmount) * Number(exchangeRate)).toFixed(2);
+}
+
+function calculateExchangeDiff(expectedBaseAmount, actualBaseAmount) {
+  return (Number(actualBaseAmount) - Number(expectedBaseAmount)).toFixed(2);
+}
+
+function getExchangeDiffType(diffAmount) {
+  const diff = Number(diffAmount);
+  if (diff > 0.001) return EXCHANGE_DIFF_TYPE.GAIN;
+  if (diff < -0.001) return EXCHANGE_DIFF_TYPE.LOSS;
+  return EXCHANGE_DIFF_TYPE.NONE;
+}
+
+function validateExchangeRate(rate) {
+  const r = Number(rate);
+  return !isNaN(r) && r > 0;
+}
+
+function validateClaimInput({ receipt, receivable, amount, baseAmount, exchangeRate, existingClaims, sameReceivableClaims }) {
   if (receipt.status === RECEIPT_STATUS.CLOSED) {
     return CLAIM_ERRORS.RECEIPT_CLOSED;
   }
@@ -42,6 +93,11 @@ function validateClaimInput({ receipt, receivable, amount, existingClaims, sameR
   }
   if (sameReceivableClaims && sameReceivableClaims.length > 0) {
     return CLAIM_ERRORS.DUPLICATE;
+  }
+  const receiptCurrency = receipt.receiptCurrency || receipt.currency || BASE_CURRENCY;
+  const receivableCurrency = receivable.currency || BASE_CURRENCY;
+  if (receiptCurrency !== BASE_CURRENCY && !validateExchangeRate(exchangeRate)) {
+    return CLAIM_ERRORS.EXCHANGE_RATE_REQUIRED;
   }
   const claimedOnReceipt = existingClaims
     .filter(c => c.receiptId === receipt.id && c.status === 'active')
@@ -87,13 +143,22 @@ function now() {
 }
 
 module.exports = {
+  BASE_CURRENCY,
+  CURRENCIES,
+  EXCHANGE_RATE_SOURCE,
+  EXCHANGE_DIFF_STATUS,
+  EXCHANGE_DIFF_TYPE,
   RECEIPT_STATUS,
   RECEIVABLE_STATUS,
   HANGING_STATUS,
   CLAIM_ERRORS,
   validateClaimInput,
+  validateExchangeRate,
   computeReceiptStatus,
   computeReceivableStatus,
+  toBaseCurrency,
+  calculateExchangeDiff,
+  getExchangeDiffType,
   receiptNo,
   now
 };

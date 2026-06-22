@@ -27,12 +27,12 @@ router.get('/batches', wrap(() => service.getBatches()));
 
 router.post('/batches/:batchNo/import', wrap(req => {
   const { batchNo } = req.params;
-  const { receipts, operator } = req.body;
+  const { receipts, operator, exchangeRate } = req.body;
   if (!operator) throw new Error('操作人必填');
   if (!receipts || !Array.isArray(receipts) || receipts.length === 0) {
     throw new Error('回单明细不能为空');
   }
-  return service.importReceipts(batchNo, receipts, operator);
+  return service.importReceipts(batchNo, receipts, operator, exchangeRate);
 }));
 
 router.get('/batches/:batchNo/receipts', wrap(req => {
@@ -61,11 +61,11 @@ router.get('/receivables', wrap(req => {
 }));
 
 router.post('/claims/manual', wrap(req => {
-  const { receiptId, receivableId, amount, operator, remark } = req.body;
+  const { receiptId, receivableId, amount, baseAmount, exchangeRate, operator, remark } = req.body;
   if (!receiptId || !receivableId || !amount || !operator) {
     throw new Error('回单、应收单、金额、操作人均必填');
   }
-  return service.manualClaim({ receiptId, receivableId, amount, operator, remark });
+  return service.manualClaim({ receiptId, receivableId, amount, baseAmount, exchangeRate, operator, remark });
 }));
 
 router.post('/claims/split', wrap(req => {
@@ -112,5 +112,32 @@ router.post('/exports/reconciliation', wrap(req => {
 }));
 
 router.get('/exports', wrap(() => service.getExportList()));
+
+router.post('/exchange-rates', wrap(req => {
+  const { fromCurrency, toCurrency, rate, effectiveDate, operator } = req.body;
+  if (!fromCurrency || !toCurrency || !rate || !operator) {
+    throw new Error('源币种、目标币种、汇率、操作人均必填');
+  }
+  return service.createExchangeRate({ fromCurrency, toCurrency, rate, effectiveDate, operator });
+}));
+
+router.get('/exchange-rates', wrap(req => {
+  const { fromCurrency, toCurrency, effectiveDate } = req.query;
+  return service.getExchangeRates({ fromCurrency, toCurrency, effectiveDate });
+}));
+
+router.get('/exchange-diffs', wrap(req => {
+  const { status, diffType, batchNo } = req.query;
+  return service.getExchangeDiffList({ status, diffType, batchNo });
+}));
+
+router.post('/exchange-diffs/:diffId/process', wrap(req => {
+  const { action, operator, remark } = req.body;
+  if (!action || !operator) throw new Error('处理动作和操作人必填');
+  return service.processExchangeDiff({
+    diffId: req.params.diffId,
+    action, operator, remark
+  });
+}));
 
 module.exports = router;

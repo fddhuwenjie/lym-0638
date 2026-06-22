@@ -1,7 +1,10 @@
 const JsonStore = require('../store/json-store');
 const {
+  BASE_CURRENCY, EXCHANGE_RATE_SOURCE, EXCHANGE_DIFF_STATUS, EXCHANGE_DIFF_TYPE,
   RECEIPT_STATUS, RECEIVABLE_STATUS, HANGING_STATUS, CLAIM_ERRORS,
-  validateClaimInput, computeReceiptStatus, computeReceivableStatus, receiptNo, now
+  validateClaimInput, validateExchangeRate, computeReceiptStatus, computeReceivableStatus,
+  toBaseCurrency, calculateExchangeDiff, getExchangeDiffType,
+  receiptNo, now
 } = require('../utils/constants');
 const path = require('path');
 
@@ -27,23 +30,91 @@ class ReceiptService {
     return this.store.insert('batches', batch);
   }
 
-  importReceipts(batchNo, receiptList, operator) {
+  createExchangeRate({ fromCurrency, toCurrency, rate, effectiveDate, source = EXCHANGE_RATE_SOURCE.MANUAL, operator }) {
+    if (!fromCurrency || !toCurrency) throw new Error('币种不能为空');
+    if (!validateExchangeRate(rate)) throw new Error('汇率必须大于0');
+    const rateId = this.store.nextId('X');
+    const exchangeRate = {
+      id: rateId,
+      rateId,
+      fromCurrency,
+      toCurrency,
+      rate: Number(rate).toFixed(4),
+      effectiveDate: effectiveDate || now().slice(0, 10),
+      source,
+      operator,
+      createdAt: now()
+    };
+    return this.store.insert('exchangeRates', exchangeRate);
+  }
+
+  getExchangeRates({ fromCurrency, toCurrency, effectiveDate } = {}) {
+    let rates = this.store.getAll('exchangeRates');
+    if (fromCurrency) rates = rates.filter(r => r.fromCurrency === fromCurrency);
+    if (toCurrency) rates = rates.filter(r => r.toCurrency === toCurrency);
+    if (effectiveDate) rates = rates.filter(r => r.effectiveDate <= effectiveDate);
+    return rates.sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate) || b.createdAt.localeCompare(a.createdAt));
+  }
+
+  findExchangeRate(fromCurrency, toCurrency, date = now().slice(0, 10)) {
+    if (fromCurrency === toCurrency) return 1;
+    const rates = this.getExchangeRates({ fromCurrency, toCurrency, effectiveDate: date });
+    if (rates.length > 0) return Number(rates[0].rate);
+    const reverse = this.getExchangeRates({ fromCurrency: toCurrency, toCurrency: fromCurrency, effectiveDate: date });
+    if (reverse.length > 0) return (1 / Number(reverse[0].rate)).toFixed(4);
+    return null;
+  }
+
+  importReceipts(batchNo, receiptList, operator, batchExchangeRate) {
     const batch = this.store.findById('batches', batchNo, 'batchNo');
     if (!batch) throw new Error('批次不存在');
     const receipts = [];
     let total = 0;
+    let totalBase = 0;
     receiptList.forEach((r, i) => {
       const receiptId = this.store.nextId('R');
       const no = receiptNo(batchNo, i + 1);
+      const receiptCurrency = r.receiptCurrency || r.currency || BASE_CURRENCY;
+      const receivableCurrency = r.receivableCurrency || receiptCurrency;
+      const settlementCurrency = r.settlementCurrency || receiptCurrency;
+      const bankDate = r.bankDate || now().slice(0, 10);
+      let exchangeRate = r.exchangeRate;
+      if (!exchangeRate && batchExchangeRate) {
+        exchangeRate = batchExchangeRate;
+      }
+      if (!exchangeRate && receiptCurrency !== BASE_CURRENCY) {
+        exchangeRate = this.findExchangeRate(receiptCurrency, BASE_CURRENCY, bankDate);
+        if (!exchangeRate) {
+          throw new Error(`回单${i + 1}：${receiptCurrency} 汇率不存在，请先录入汇率或手工指定`);
+        }
+      }
+      if (exchangeRate && receiptCurrency !== BASE_CURRENCY) {
+        this.createExchangeRate({
+          fromCurrency: receiptCurrency,
+          toCurrency: BASE_CURRENCY,
+          rate: exchangeRate,
+          effectiveDate: bankDate,
+          source: EXCHANGE_RATE_SOURCE.IMPORT,
+          operator
+        });
+      }
+      const baseAmount = receiptCurrency === BASE_CURRENCY
+        ? Number(r.amount).toFixed(2)
+        : toBaseCurrency(r.amount, exchangeRate, receiptCurrency);
       const receipt = {
         id: receiptId,
         receiptNo: no,
         batchNo,
-        bankDate: r.bankDate || now().slice(0, 10),
+        bankDate,
         customerId: r.customerId || '',
         customerName: r.customerName || '',
         amount: Number(r.amount).toFixed(2),
-        currency: r.currency || 'CNY',
+        currency: receiptCurrency,
+        receiptCurrency,
+        receivableCurrency,
+        settlementCurrency,
+        exchangeRate: exchangeRate ? Number(exchangeRate).toFixed(4) : null,
+        baseAmount,
         orderNo: r.orderNo || '',
         remark: r.remark || '',
         status: RECEIPT_STATUS.PENDING,
@@ -52,11 +123,13 @@ class ReceiptService {
       };
       receipts.push(receipt);
       total += Number(receipt.amount);
+      totalBase += Number(receipt.baseAmount);
     });
     receipts.forEach(r => this.store.insert('receipts', r));
     const updated = this.store.update('batches', batchNo, {
       receiptCount: receipts.length,
-      totalAmount: total.toFixed(2)
+      totalAmount: total.toFixed(2),
+      totalBaseAmount: totalBase.toFixed(2)
     }, 'batchNo');
     return { batch: updated, receipts };
   }
@@ -106,7 +179,7 @@ class ReceiptService {
       const match = this._findMatch(receipt, receivables, claims);
       if (match) {
         try {
-          const claim = this._createClaimInternal({
+          const { claim } = this._createClaimInternal({
             receiptId: receipt.id,
             receivableId: match.receivable.id,
             amount: Number(receipt.amount),
@@ -164,7 +237,33 @@ class ReceiptService {
     this.store.update('batches', batchNo, { claimedCount }, 'batchNo');
   }
 
-  _createClaimInternal({ receiptId, receivableId, amount, operator, claimType = 'manual', matchType = '' }) {
+  _createExchangeDiffInternal({ claimId, receiptId, receivableId, expectedBaseAmount, actualBaseAmount, operator }) {
+    const diffAmount = calculateExchangeDiff(expectedBaseAmount, actualBaseAmount);
+    const diffType = getExchangeDiffType(diffAmount);
+    if (diffType === EXCHANGE_DIFF_TYPE.NONE) return null;
+    const diffId = this.store.nextId('D');
+    const diff = {
+      id: diffId,
+      diffId,
+      claimId,
+      receiptId,
+      receivableId,
+      expectedBaseAmount: Number(expectedBaseAmount).toFixed(2),
+      actualBaseAmount: Number(actualBaseAmount).toFixed(2),
+      diffAmount,
+      diffType,
+      status: EXCHANGE_DIFF_STATUS.PENDING,
+      createdBy: operator,
+      createdAt: now(),
+      processedBy: null,
+      processedAt: null,
+      processResult: null,
+      processRemark: null
+    };
+    return this.store.insert('exchangeDiffs', diff);
+  }
+
+  _createClaimInternal({ receiptId, receivableId, amount, baseAmount, exchangeRate, operator, claimType = 'manual', matchType = '' }) {
     const receipt = this.store.findById('receipts', receiptId);
     const receivable = this.store.findById('receivables', receivableId);
     if (!receipt) throw new Error('回单不存在');
@@ -173,11 +272,20 @@ class ReceiptService {
     const sameReceivableClaims = allClaims.filter(c =>
       c.receiptId === receiptId && c.receivableId === receivableId && c.status === 'active'
     );
+    const receiptCurrency = receipt.receiptCurrency || receipt.currency || BASE_CURRENCY;
+    if (!exchangeRate && receiptCurrency !== BASE_CURRENCY) {
+      exchangeRate = receipt.exchangeRate;
+    }
     const err = validateClaimInput({
-      receipt, receivable, amount,
+      receipt, receivable, amount, baseAmount, exchangeRate,
       existingClaims: allClaims, sameReceivableClaims
     });
     if (err) throw new Error(err);
+    const finalExchangeRate = exchangeRate || 1;
+    const calculatedBaseAmount = toBaseCurrency(amount, finalExchangeRate, receiptCurrency);
+    const actualBaseAmount = baseAmount !== undefined && baseAmount !== null
+      ? Number(baseAmount).toFixed(2)
+      : calculatedBaseAmount;
     const claimId = this.store.nextId('C');
     const claim = {
       id: claimId,
@@ -185,6 +293,9 @@ class ReceiptService {
       receiptId,
       receivableId,
       amount: Number(amount).toFixed(2),
+      currency: receiptCurrency,
+      exchangeRate: Number(finalExchangeRate).toFixed(4),
+      baseAmount: actualBaseAmount,
       operator,
       claimType,
       matchType,
@@ -195,10 +306,21 @@ class ReceiptService {
       revokeReason: null
     };
     this.store.insert('claims', claim);
+    const exchangeDiff = this._createExchangeDiffInternal({
+      claimId,
+      receiptId,
+      receivableId,
+      expectedBaseAmount: Number(calculatedBaseAmount),
+      actualBaseAmount: Number(actualBaseAmount),
+      operator
+    });
+    if (exchangeDiff) {
+      this.store.update('claims', claimId, { exchangeDiffId: exchangeDiff.diffId });
+    }
     this._refreshReceiptStatus(receiptId);
     this._refreshReceivableStatus(receivableId);
     this._refreshBatch(receipt.batchNo);
-    return claim;
+    return { claim, exchangeDiff };
   }
 
   _createHangingInternal({ receiptId, reason, operator }) {
@@ -227,9 +349,9 @@ class ReceiptService {
     return hanging;
   }
 
-  manualClaim({ receiptId, receivableId, amount, operator, remark = '' }) {
+  manualClaim({ receiptId, receivableId, amount, baseAmount, exchangeRate, operator, remark = '' }) {
     return this._createClaimInternal({
-      receiptId, receivableId, amount, operator,
+      receiptId, receivableId, amount, baseAmount, exchangeRate, operator,
       claimType: 'manual', matchType: remark
     });
   }
@@ -250,11 +372,12 @@ class ReceiptService {
     const created = [];
     try {
       splits.forEach(sp => {
-        const c = this._createClaimInternal({
+        const { claim } = this._createClaimInternal({
           receiptId, receivableId: sp.receivableId, amount: sp.amount,
+          baseAmount: sp.baseAmount, exchangeRate: sp.exchangeRate,
           operator, claimType: 'split', matchType: sp.remark || ''
         });
-        created.push(c);
+        created.push(claim);
       });
     } catch (e) {
       created.forEach(c => this.revokeClaim(c.id, operator, '回滚拆分失败'));
@@ -293,7 +416,7 @@ class ReceiptService {
     if (action === 'claim') {
       if (!receivableId) throw new Error('请选择应收单');
       const claimAmount = amount || Number(receipt.amount);
-      const claim = this._createClaimInternal({
+      const { claim } = this._createClaimInternal({
         receiptId: receipt.id, receivableId, amount: claimAmount,
         operator, claimType: 'hanging_resolve', matchType: remark
       });
@@ -359,8 +482,80 @@ class ReceiptService {
     }, 'batchNo');
   }
 
+  getExchangeDiffList({ status, diffType, batchNo } = {}) {
+    const diffs = this.store.getAll('exchangeDiffs');
+    const receipts = this.store.getAll('receipts');
+    const receivables = this.store.getAll('receivables');
+    const claims = this.store.getAll('claims');
+    let list = diffs.map(d => {
+      const rc = receipts.find(r => r.id === d.receiptId);
+      const rv = receivables.find(r => r.id === d.receivableId);
+      const cl = claims.find(c => c.id === d.claimId);
+      return {
+        diffId: d.diffId,
+        claimId: d.claimId,
+        receiptNo: rc ? rc.receiptNo : '',
+        batchNo: rc ? rc.batchNo : '',
+        receivableNo: rv ? rv.receivableNo : '',
+        customerName: rc ? rc.customerName : '',
+        expectedBaseAmount: d.expectedBaseAmount,
+        actualBaseAmount: d.actualBaseAmount,
+        diffAmount: d.diffAmount,
+        diffType: d.diffType,
+        status: d.status,
+        createdBy: d.createdBy,
+        createdAt: d.createdAt,
+        processedBy: d.processedBy,
+        processedAt: d.processedAt,
+        processResult: d.processResult,
+        processRemark: d.processRemark,
+        receiptCurrency: rc ? rc.receiptCurrency : '',
+        claimAmount: cl ? cl.amount : '',
+        exchangeRate: cl ? cl.exchangeRate : ''
+      };
+    });
+    if (status) list = list.filter(x => x.status === status);
+    if (diffType) list = list.filter(x => x.diffType === diffType);
+    if (batchNo) list = list.filter(x => x.batchNo === batchNo);
+    return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  processExchangeDiff({ diffId, action, operator, remark = '' }) {
+    const diff = this.store.findById('exchangeDiffs', diffId, 'diffId');
+    if (!diff) throw new Error('汇兑差异记录不存在');
+    if (diff.status !== EXCHANGE_DIFF_STATUS.PENDING) throw new Error('该汇兑差异已处理');
+    let result = null;
+    if (action === 'recognize') {
+      result = { action: 'recognize', description: `确认汇兑${diff.diffType === 'gain' ? '收益' : '损失'}` };
+    } else if (action === 'writeoff') {
+      result = { action: 'writeoff', description: '核销差异' };
+    } else if (action === 'adjust') {
+      result = { action: 'adjust', description: '调整入账' };
+    } else {
+      throw new Error('无效的处理动作');
+    }
+    return this.store.update('exchangeDiffs', diffId, {
+      status: EXCHANGE_DIFF_STATUS.PROCESSED,
+      processedBy: operator,
+      processedAt: now(),
+      processResult: JSON.stringify(result),
+      processRemark: remark
+    }, 'diffId');
+  }
+
   createReceivable(data) {
     const id = this.store.nextId('A');
+    const currency = data.currency || BASE_CURRENCY;
+    let exchangeRate = data.exchangeRate;
+    if (!exchangeRate && currency !== BASE_CURRENCY) {
+      exchangeRate = this.findExchangeRate(currency, BASE_CURRENCY, now().slice(0, 10));
+      if (!exchangeRate) {
+        throw new Error(`${currency} 汇率不存在，请先录入汇率或手工指定`);
+      }
+    }
+    const baseAmount = currency === BASE_CURRENCY
+      ? Number(data.amount).toFixed(2)
+      : toBaseCurrency(data.amount, exchangeRate, currency);
     const receivable = {
       id,
       receivableNo: data.receivableNo || id,
@@ -369,7 +564,9 @@ class ReceiptService {
       orderNo: data.orderNo || '',
       contractNo: data.contractNo || '',
       amount: Number(data.amount).toFixed(2),
-      currency: data.currency || 'CNY',
+      currency,
+      exchangeRate: exchangeRate ? Number(exchangeRate).toFixed(4) : null,
+      baseAmount,
       dueDate: data.dueDate || '',
       remark: data.remark || '',
       status: RECEIVABLE_STATUS.UNPAID,
@@ -384,15 +581,20 @@ class ReceiptService {
     const receipts = this.store.getAll('receipts');
     const receivables = this.store.getAll('receivables');
     const batches = this.store.getAll('batches');
+    const exchangeDiffs = this.store.getAll('exchangeDiffs');
     let list = claims.map(c => {
       const rc = receipts.find(r => r.id === c.receiptId);
       const rv = receivables.find(r => r.id === c.receivableId);
       const bc = batches.find(b => b.batchNo === (rc ? rc.batchNo : ''));
+      const diff = exchangeDiffs.find(d => d.claimId === c.id);
       return {
         claimId: c.claimId,
         claimType: c.claimType,
         matchType: c.matchType,
         amount: c.amount,
+        currency: c.currency || (rc ? rc.receiptCurrency : BASE_CURRENCY),
+        exchangeRate: c.exchangeRate,
+        baseAmount: c.baseAmount,
         operator: c.operator,
         status: c.status,
         createdAt: c.createdAt,
@@ -404,7 +606,12 @@ class ReceiptService {
         orderNo: rv ? rv.orderNo : '',
         receivableCustomer: rv ? rv.customerName : '',
         receivableAmount: rv ? rv.amount : '',
+        receivableCurrency: rv ? rv.currency : BASE_CURRENCY,
         batchOperator: bc ? bc.operator : '',
+        exchangeDiffId: c.exchangeDiffId,
+        exchangeDiffAmount: diff ? diff.diffAmount : null,
+        exchangeDiffType: diff ? diff.diffType : null,
+        exchangeDiffStatus: diff ? diff.status : null,
         revokedAt: c.revokedAt,
         revokedBy: c.revokedBy,
         revokeReason: c.revokeReason
@@ -463,6 +670,9 @@ class ReceiptService {
         orderNo: r.orderNo,
         contractNo: r.contractNo,
         amount: r.amount,
+        currency: r.currency,
+        exchangeRate: r.exchangeRate,
+        baseAmount: r.baseAmount,
         claimedAmount: claimed.toFixed(2),
         remainingAmount: remaining.toFixed(2),
         dueDate: r.dueDate,
@@ -482,10 +692,15 @@ class ReceiptService {
       const claimed = claims
         .filter(c => c.receiptId === r.id && c.status === 'active')
         .reduce((s, c) => s + Number(c.amount), 0);
+      const claimedBase = claims
+        .filter(c => c.receiptId === r.id && c.status === 'active')
+        .reduce((s, c) => s + Number(c.baseAmount || 0), 0);
       return {
         ...r,
         claimedAmount: claimed.toFixed(2),
-        remainingAmount: (Number(r.amount) - claimed).toFixed(2)
+        remainingAmount: (Number(r.amount) - claimed).toFixed(2),
+        claimedBaseAmount: claimedBase.toFixed(2),
+        remainingBaseAmount: (Number(r.baseAmount || r.amount) - claimedBase).toFixed(2)
       };
     });
   }
@@ -498,6 +713,7 @@ class ReceiptService {
     const claims = this.getClaimDetails();
     const hangings = this.getHangingList();
     const receipts = this.store.getAll('receipts');
+    const exchangeDiffs = this.getExchangeDiffList();
     const records = [];
     claims.forEach(c => {
       if (startDate && c.createdAt < startDate) return;
@@ -508,15 +724,32 @@ class ReceiptService {
         difference.push('客户名称不一致');
       }
       if (c.status === 'revoked') difference.push('认领已撤销');
+      if (c.exchangeDiffType && c.exchangeDiffType !== 'none') {
+        difference.push(`汇兑${c.exchangeDiffType === 'gain' ? '收益' : '损失'}`);
+      }
+      const diff = exchangeDiffs.find(d => d.claimId === c.claimId);
       records.push({
         type: '认领',
         batchNo: c.batchNo,
         receiptNo: c.receiptNo,
         bankDate: c.bankDate,
         receiptAmount: receipt ? receipt.amount : '',
+        receiptCurrency: c.currency,
         receivableNo: c.receivableNo,
         orderNo: c.orderNo,
         claimAmount: c.amount,
+        claimCurrency: c.currency,
+        exchangeRate: c.exchangeRate,
+        baseAmount: c.baseAmount,
+        receivableAmount: c.receivableAmount,
+        receivableCurrency: c.receivableCurrency,
+        exchangeDiffAmount: c.exchangeDiffAmount,
+        exchangeDiffType: c.exchangeDiffType,
+        exchangeDiffStatus: c.exchangeDiffStatus,
+        diffProcessedBy: diff ? diff.processedBy : '',
+        diffProcessedAt: diff ? diff.processedAt : '',
+        diffProcessResult: diff ? diff.processResult : '',
+        diffProcessRemark: diff ? diff.processRemark : '',
         receiptCustomer: c.receiptCustomer,
         receivableCustomer: c.receivableCustomer,
         claimType: c.claimType,
@@ -534,11 +767,16 @@ class ReceiptService {
     hangings.forEach(h => {
       if (startDate && h.createdAt < startDate) return;
       if (endDate && h.createdAt > endDate + ' 23:59:59') return;
+      const receipt = receipts.find(r => r.receiptNo === h.receiptNo);
       records.push({
         type: '挂账',
         batchNo: h.batchNo,
         receiptNo: h.receiptNo,
+        bankDate: receipt ? receipt.bankDate : '',
         receiptAmount: h.receiptAmount,
+        receiptCurrency: receipt ? receipt.receiptCurrency : '',
+        exchangeRate: receipt ? receipt.exchangeRate : '',
+        baseAmount: receipt ? receipt.baseAmount : '',
         customerName: h.customerName,
         orderNo: h.orderNo,
         reason: h.reason,
