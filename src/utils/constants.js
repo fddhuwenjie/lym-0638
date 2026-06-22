@@ -96,8 +96,12 @@ function validateClaimInput({ receipt, receivable, amount, baseAmount, exchangeR
   }
   const receiptCurrency = receipt.receiptCurrency || receipt.currency || BASE_CURRENCY;
   const receivableCurrency = receivable.currency || BASE_CURRENCY;
+  const currenciesDiffer = receiptCurrency !== receivableCurrency;
   if (receiptCurrency !== BASE_CURRENCY && !validateExchangeRate(exchangeRate)) {
     return CLAIM_ERRORS.EXCHANGE_RATE_REQUIRED;
+  }
+  if (currenciesDiffer && !validateExchangeRate(exchangeRate) && (baseAmount === undefined || baseAmount === null || Number(baseAmount) <= 0)) {
+    return CLAIM_ERRORS.AMOUNT_MISMATCH;
   }
   const claimedOnReceipt = existingClaims
     .filter(c => c.receiptId === receipt.id && c.status === 'active')
@@ -106,11 +110,15 @@ function validateClaimInput({ receipt, receivable, amount, baseAmount, exchangeR
   if (Number(amount) > receiptRemaining) {
     return CLAIM_ERRORS.OVER_AMOUNT;
   }
-  const claimedOnReceivable = existingClaims
+  const receivableBase = Number(receivable.baseAmount || receivable.amount);
+  const claimedOnReceivableBase = existingClaims
     .filter(c => c.receivableId === receivable.id && c.status === 'active')
-    .reduce((s, c) => s + Number(c.amount), 0);
-  const receivableRemaining = Number(receivable.amount) - claimedOnReceivable;
-  if (Number(amount) > receivableRemaining) {
+    .reduce((s, c) => s + Number(c.baseAmount || c.amount), 0);
+  const receivableRemainingBase = receivableBase - claimedOnReceivableBase;
+  const claimBaseAmount = baseAmount !== undefined && baseAmount !== null
+    ? Number(baseAmount)
+    : Number(toBaseCurrency(amount, exchangeRate || 1, receiptCurrency));
+  if (claimBaseAmount > receivableRemainingBase + 0.01) {
     return CLAIM_ERRORS.OVER_RECEIVABLE;
   }
   return null;
@@ -126,11 +134,12 @@ function computeReceiptStatus(receipt, claims) {
 }
 
 function computeReceivableStatus(receivable, claims) {
-  const claimed = claims
+  const receivableBase = Number(receivable.baseAmount || receivable.amount);
+  const claimedBase = claims
     .filter(c => c.receivableId === receivable.id && c.status === 'active')
-    .reduce((s, c) => s + Number(c.amount), 0);
-  if (claimed === 0) return RECEIVABLE_STATUS.UNPAID;
-  if (claimed < Number(receivable.amount)) return RECEIVABLE_STATUS.PARTIAL;
+    .reduce((s, c) => s + Number(c.baseAmount || c.amount), 0);
+  if (claimedBase === 0) return RECEIVABLE_STATUS.UNPAID;
+  if (claimedBase < receivableBase - 0.01) return RECEIVABLE_STATUS.PARTIAL;
   return RECEIVABLE_STATUS.PAID;
 }
 

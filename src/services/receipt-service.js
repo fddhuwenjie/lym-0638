@@ -144,23 +144,49 @@ class ReceiptService {
       const st = computeReceivableStatus(r, claims);
       return st !== RECEIVABLE_STATUS.PAID;
     });
-    const byOrder = unpaid.find(r => receipt.orderNo && r.orderNo && r.orderNo === receipt.orderNo);
+    const receiptCurrency = receipt.receiptCurrency || receipt.currency || BASE_CURRENCY;
+    const receiptBase = Number(receipt.baseAmount || receipt.amount);
+    const byOrder = unpaid.find(r => receipt.orderNo && r.orderNo && receipt.orderNo === r.orderNo);
     if (byOrder) {
-      const claimed = claims.filter(c => c.receivableId === byOrder.id && c.status === 'active')
-        .reduce((s, c) => s + Number(c.amount), 0);
-      const remaining = Number(byOrder.amount) - claimed;
-      if (Math.abs(remaining - Number(receipt.amount)) < 0.001) {
-        return { receivable: byOrder, matchType: 'order_amount', score: 100 };
+      const receivableCurrency = byOrder.currency || BASE_CURRENCY;
+      if (receiptCurrency === receivableCurrency) {
+        const claimed = claims.filter(c => c.receivableId === byOrder.id && c.status === 'active')
+          .reduce((s, c) => s + Number(c.amount), 0);
+        const remaining = Number(byOrder.amount) - claimed;
+        if (Math.abs(remaining - Number(receipt.amount)) < 0.001) {
+          return { receivable: byOrder, matchType: 'order_amount', score: 100 };
+        }
+      } else {
+        const claimedBase = claims.filter(c => c.receivableId === byOrder.id && c.status === 'active')
+          .reduce((s, c) => s + Number(c.baseAmount || c.amount), 0);
+        const receivableBase = Number(byOrder.baseAmount || byOrder.amount);
+        const remainingBase = receivableBase - claimedBase;
+        if (Math.abs(remainingBase - receiptBase) < 0.01) {
+          return { receivable: byOrder, matchType: 'order_amount_cross_currency', score: 100 };
+        }
       }
     }
     const byAmount = unpaid.find(r => {
-      const claimed = claims.filter(c => c.receivableId === r.id && c.status === 'active')
-        .reduce((s, c) => s + Number(c.amount), 0);
-      const remaining = Number(r.amount) - claimed;
-      return Math.abs(remaining - Number(receipt.amount)) < 0.001;
+      const receivableCurrency = r.currency || BASE_CURRENCY;
+      if (receiptCurrency === receivableCurrency) {
+        const claimed = claims.filter(c => c.receivableId === r.id && c.status === 'active')
+          .reduce((s, c) => s + Number(c.amount), 0);
+        const remaining = Number(r.amount) - claimed;
+        return Math.abs(remaining - Number(receipt.amount)) < 0.001;
+      } else {
+        const claimedBase = claims.filter(c => c.receivableId === r.id && c.status === 'active')
+          .reduce((s, c) => s + Number(c.baseAmount || c.amount), 0);
+        const receivableBase = Number(r.baseAmount || r.amount);
+        const remainingBase = receivableBase - claimedBase;
+        return Math.abs(remainingBase - receiptBase) < 0.01;
+      }
     });
     if (byAmount) {
-      return { receivable: byAmount, matchType: 'amount', score: 80 };
+      const receivableCurrency = byAmount.currency || BASE_CURRENCY;
+      const matchType = receiptCurrency !== receivableCurrency
+        ? 'amount_cross_currency'
+        : 'amount';
+      return { receivable: byAmount, matchType, score: 80 };
     }
     if (byOrder) {
       return { receivable: byOrder, matchType: 'order', score: 60 };
@@ -286,6 +312,7 @@ class ReceiptService {
     const actualBaseAmount = baseAmount !== undefined && baseAmount !== null
       ? Number(baseAmount).toFixed(2)
       : calculatedBaseAmount;
+    const receivableCurrency = receivable.currency || BASE_CURRENCY;
     const claimId = this.store.nextId('C');
     const claim = {
       id: claimId,
@@ -294,6 +321,7 @@ class ReceiptService {
       receivableId,
       amount: Number(amount).toFixed(2),
       currency: receiptCurrency,
+      receivableCurrency,
       exchangeRate: Number(finalExchangeRate).toFixed(4),
       baseAmount: actualBaseAmount,
       operator,
@@ -593,8 +621,10 @@ class ReceiptService {
         matchType: c.matchType,
         amount: c.amount,
         currency: c.currency || (rc ? rc.receiptCurrency : BASE_CURRENCY),
+        receivableCurrency: c.receivableCurrency || (rv ? rv.currency : BASE_CURRENCY),
         exchangeRate: c.exchangeRate,
         baseAmount: c.baseAmount,
+        receivableBaseAmount: rv ? (rv.baseAmount || rv.amount) : '',
         operator: c.operator,
         status: c.status,
         createdAt: c.createdAt,
@@ -606,7 +636,7 @@ class ReceiptService {
         orderNo: rv ? rv.orderNo : '',
         receivableCustomer: rv ? rv.customerName : '',
         receivableAmount: rv ? rv.amount : '',
-        receivableCurrency: rv ? rv.currency : BASE_CURRENCY,
+        receivableCurrencyDisplay: rv ? rv.currency : BASE_CURRENCY,
         batchOperator: bc ? bc.operator : '',
         exchangeDiffId: c.exchangeDiffId,
         exchangeDiffAmount: diff ? diff.diffAmount : null,
@@ -659,10 +689,16 @@ class ReceiptService {
     const receivables = this.store.getAll('receivables');
     const claims = this.store.getAll('claims');
     let list = receivables.map(r => {
-      const claimed = claims
+      const receivableCurrency = r.currency || BASE_CURRENCY;
+      const receivableBase = Number(r.baseAmount || r.amount);
+      const claimedBase = claims
         .filter(c => c.receivableId === r.id && c.status === 'active')
+        .reduce((s, c) => s + Number(c.baseAmount || c.amount), 0);
+      const remainingBase = receivableBase - claimedBase;
+      const claimedOriginal = claims
+        .filter(c => c.receivableId === r.id && c.status === 'active' && (c.currency || BASE_CURRENCY) === receivableCurrency)
         .reduce((s, c) => s + Number(c.amount), 0);
-      const remaining = Number(r.amount) - claimed;
+      const remainingOriginal = Number(r.amount) - claimedOriginal;
       return {
         receivableNo: r.receivableNo,
         customerId: r.customerId,
@@ -673,8 +709,10 @@ class ReceiptService {
         currency: r.currency,
         exchangeRate: r.exchangeRate,
         baseAmount: r.baseAmount,
-        claimedAmount: claimed.toFixed(2),
-        remainingAmount: remaining.toFixed(2),
+        claimedAmount: claimedBase.toFixed(2),
+        claimedBaseAmount: claimedBase.toFixed(2),
+        remainingAmount: remainingOriginal.toFixed(2),
+        remainingBaseAmount: remainingBase.toFixed(2),
         dueDate: r.dueDate,
         status: r.status,
         createdAt: r.createdAt
@@ -742,7 +780,8 @@ class ReceiptService {
         exchangeRate: c.exchangeRate,
         baseAmount: c.baseAmount,
         receivableAmount: c.receivableAmount,
-        receivableCurrency: c.receivableCurrency,
+        receivableCurrency: c.receivableCurrencyDisplay || c.receivableCurrency,
+        receivableBaseAmount: c.receivableBaseAmount,
         exchangeDiffAmount: c.exchangeDiffAmount,
         exchangeDiffType: c.exchangeDiffType,
         exchangeDiffStatus: c.exchangeDiffStatus,

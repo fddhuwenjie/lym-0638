@@ -231,7 +231,7 @@ async function runTests() {
     console.log('');
 
     console.log('【场景十一】多币种 - 汇率管理');
-    console.log('  录入 USD 汇率 (1 USD = 7.25 CNY) ...');
+    console.log('  录入 USD→CNY 汇率 (1 USD = 7.25 CNY) ...');
     const usdRate = service.createExchangeRate({
       fromCurrency: 'USD',
       toCurrency: 'CNY',
@@ -249,46 +249,43 @@ async function runTests() {
     console.log(`  查询到 ${rates.length} 条 USD 汇率记录`);
     console.log('');
 
-    console.log('【场景十二】多币种 - 创建外币应收单');
-    console.log('  创建 USD 应收单1: 苹果公司 $10,000 (汇率 7.25) ...');
-    const usdReceivable1 = service.createReceivable({
+    console.log('【场景十二】多币种 - USD回单匹配CNY应收（币种不一致）');
+    console.log('  创建 CNY 应收单: 苹果公司 ¥72,500 ...');
+    const cnyReceivable = service.createReceivable({
       receivableNo: 'AR2025005',
       customerId: 'C004',
       customerName: '苹果公司',
       orderNo: 'ORD-2025-005',
-      amount: 10000,
-      currency: 'USD',
-      exchangeRate: 7.25,
+      amount: 72500,
+      currency: 'CNY',
       dueDate: '2025-12-31',
       createdBy: 'finance_01'
     });
-    assert(usdReceivable1.currency === 'USD', '应收单币种应为 USD');
-    assert(usdReceivable1.baseAmount === '72500.00', '本位币金额应为 72,500.00 (10000 * 7.25)');
-    console.log(`  USD 应收单1创建成功: 原币 $${usdReceivable1.amount}, 本位币 ¥${usdReceivable1.baseAmount}`);
+    assert(cnyReceivable.currency === 'CNY', '应收单币种应为 CNY');
+    assert(cnyReceivable.baseAmount === '72500.00', 'CNY 应收单本位币金额应等于原币金额');
+    console.log(`  CNY 应收单创建成功: ¥${cnyReceivable.amount}`);
 
-    console.log('  创建 USD 应收单2: 苹果公司 $5,000 (汇率 7.25) ...');
-    const usdReceivable2 = service.createReceivable({
+    console.log('  创建 CNY 应收单2: 苹果公司 ¥36,250 ...');
+    const cnyReceivable2 = service.createReceivable({
       receivableNo: 'AR2025006',
       customerId: 'C004',
       customerName: '苹果公司',
       orderNo: 'ORD-2025-006',
-      amount: 5000,
-      currency: 'USD',
-      exchangeRate: 7.25,
+      amount: 36250,
+      currency: 'CNY',
       dueDate: '2025-12-31',
       createdBy: 'finance_01'
     });
-    assert(usdReceivable2.currency === 'USD', '应收单币种应为 USD');
-    assert(usdReceivable2.baseAmount === '36250.00', '本位币金额应为 36,250.00 (5000 * 7.25)');
-    console.log(`  USD 应收单2创建成功: 原币 $${usdReceivable2.amount}, 本位币 ¥${usdReceivable2.baseAmount}`);
+    console.log(`  CNY 应收单2创建成功: ¥${cnyReceivable2.amount}`);
     console.log('');
 
-    console.log('【场景十三】多币种 - 导入外币回单');
+    console.log('【场景十三】多币种 - 导入USD回单，自动匹配CNY应收');
     console.log('  创建多币种批次 ...');
     const fxBatch = service.createBatch({ operator: 'finance_01', fileName: 'fx_bank_2025_06_20.xlsx', remark: '多币种回单' });
     console.log(`  批次创建成功: ${fxBatch.batchNo}`);
 
-    console.log('  导入 USD 回单: $10,000 (汇率 7.25) ...');
+    console.log('  导入 USD 回单1: $10,000 (汇率 7.25, 本位币 ¥72,500) ...');
+    console.log('  导入 USD 回单2: $5,000 (汇率 7.26, 本位币 ¥36,300) ...');
     const fxImported = service.importReceipts(fxBatch.batchNo, [
       {
         bankDate: '2025-06-20',
@@ -296,20 +293,20 @@ async function runTests() {
         customerName: '苹果公司',
         amount: 10000,
         receiptCurrency: 'USD',
-        receivableCurrency: 'USD',
-        settlementCurrency: 'USD',
+        receivableCurrency: 'CNY',
+        settlementCurrency: 'CNY',
         exchangeRate: 7.25,
         orderNo: 'ORD-2025-005',
-        remark: 'USD 货款'
+        remark: 'USD回单认领CNY应收'
       },
       {
         bankDate: '2025-06-20',
         customerId: 'C004',
         customerName: '苹果公司',
-        amount: 5500,
+        amount: 5000,
         receiptCurrency: 'USD',
-        receivableCurrency: 'USD',
-        settlementCurrency: 'USD',
+        receivableCurrency: 'CNY',
+        settlementCurrency: 'CNY',
         exchangeRate: 7.26,
         orderNo: '',
         remark: '部分付款'
@@ -317,45 +314,61 @@ async function runTests() {
     ], 'finance_01');
     assert(fxImported.receipts.length === 2, '应导入2张外币回单');
     assert(fxImported.receipts[0].baseAmount === '72500.00', '第1张回单本位币应为 72,500.00');
-    assert(fxImported.receipts[1].baseAmount === '39930.00', '第2张回单本位币应为 39,930.00 (5500 * 7.26)');
-    assert(fxImported.batch.totalBaseAmount === '112430.00', '批次本位币总额应为 112,430.00');
-    console.log(`  导入成功: 2张回单, 原币 $15,500, 本位币 ¥${fxImported.batch.totalBaseAmount}`);
+    assert(fxImported.receipts[1].baseAmount === '36300.00', '第2张回单本位币应为 36,300.00 (5000 * 7.26)');
+    console.log(`  导入成功: 2张回单, 原币 $15,000, 本位币 ¥${fxImported.batch.totalBaseAmount}`);
     console.log('');
 
-    console.log('【场景十四】多币种 - 自动匹配与汇兑损益');
+    console.log('【场景十四】多币种 - USD回单自动匹配CNY应收');
     console.log('  执行自动匹配 ...');
     const fxMatchResults = service.autoMatch(fxBatch.batchNo, 'system_auto');
     console.log(`  匹配结果: ${fxMatchResults.filter(r => r.status === 'matched').length} 成功, ${fxMatchResults.filter(r => r.status === 'hanging').length} 挂账`);
+    fxMatchResults.forEach(r => console.log(`    ${r.receiptNo}: ${r.status}${r.matchType ? ' (' + r.matchType + ')' : ''}${r.reason ? ' - ' + r.reason : ''}`));
 
-    console.log('  查看认领明细与汇兑差异 ...');
+    console.log('  验证认领记录 - USD回单认领CNY应收，按本位币正确冲减应收余额 ...');
     const fxClaims = service.getClaimDetails({ batchNo: fxBatch.batchNo });
-    assert(fxClaims.length >= 1, '应至少有1条认领记录');
-    const matchedClaim = fxClaims.find(c => c.currency === 'USD');
-    assert(matchedClaim, '应有 USD 认领记录');
-    assert(matchedClaim.exchangeRate === '7.2500', '认领汇率应为 7.2500');
-    assert(matchedClaim.baseAmount === '72500.00', '认领本位币金额应为 72,500.00');
-    console.log(`  认领记录: 原币 $${matchedClaim.amount}, 汇率 ${matchedClaim.exchangeRate}, 本位币 ¥${matchedClaim.baseAmount}`);
+    const crossClaim = fxClaims.find(c => c.currency === 'USD' && c.receivableCurrency === 'CNY');
+    assert(crossClaim, '应有 USD→CNY 跨币种认领记录');
+    assert(crossClaim.amount === '10000.00', '认领原币金额应为 $10,000');
+    assert(crossClaim.baseAmount === '72500.00', '认领本位币金额应为 ¥72,500');
+    assert(crossClaim.receivableCurrency === 'CNY', '应收币种应为 CNY');
+    console.log(`  跨币种认领: 原币 $${crossClaim.amount} (USD), 本位币 ¥${crossClaim.baseAmount}, 应收币种 ${crossClaim.receivableCurrency}`);
+
+    console.log('  验证CNY应收单按本位币冲减 ...');
+    const cnyRecAfter = service.getReceivableList();
+    const ar5 = cnyRecAfter.find(r => r.receivableNo === 'AR2025005');
+    assert(ar5.status === 'paid', 'AR2025005 应已结清 (本位币 ¥72,500 全部冲减)');
+    assert(ar5.claimedBaseAmount === '72500.00', 'AR2025005 已认领本位币应为 ¥72,500');
+    assert(Number(ar5.remainingBaseAmount) < 0.01, 'AR2025005 本位币剩余应接近0');
+    console.log(`  AR2025005 状态: ${ar5.status}, 已认领(本位币): ¥${ar5.claimedBaseAmount}, 剩余(本位币): ¥${ar5.remainingBaseAmount}`);
     console.log('');
 
-    console.log('【场景十五】多币种 - 手工指定汇率与汇兑差异');
-    console.log('  第2张回单手工认领，指定本位币金额 ¥36,100 (产生汇兑损失 ¥100) ...');
+    console.log('【场景十五】多币种 - 手工指定汇率产生汇兑差异');
+    console.log('  第2张USD回单手工认领CNY应收单2，指定本位币金额 ¥36,100 (产生汇兑损失 ¥150) ...');
     const fxReceipts = service.getReceipts(fxBatch.batchNo);
-    const secondFxReceipt = fxReceipts.find(r => Number(r.amount) === 5500);
+    const secondFxReceipt = fxReceipts.find(r => Number(r.amount) === 5000);
     const { claim: manualClaim, exchangeDiff } = service.manualClaim({
       receiptId: secondFxReceipt.id,
-      receivableId: usdReceivable2.id,
+      receivableId: cnyReceivable2.id,
       amount: 5000,
       baseAmount: 36100,
-      exchangeRate: 7.24,
+      exchangeRate: 7.25,
       operator: 'business_02',
       remark: '手工指定汇率，汇兑损失'
     });
     assert(manualClaim.baseAmount === '36100.00', '手工指定本位币应为 36,100.00');
+    assert(manualClaim.receivableCurrency === 'CNY', '应收币种应为 CNY');
     assert(exchangeDiff, '应产生汇兑差异记录');
     assert(exchangeDiff.diffType === 'loss', '差异类型应为 loss');
-    assert(Number(exchangeDiff.diffAmount) === -100, '汇兑损失应为 ¥100');
-    console.log(`  认领成功: 原币 $5,000, 汇率 7.24, 本位币 ¥36,100`);
+    assert(Number(exchangeDiff.diffAmount) === -150, '汇兑损失应为 ¥-150 (36100 - 5000*7.25)');
+    console.log(`  认领成功: 原币 $5,000 (USD), 汇率 7.25, 本位币 ¥36,100, 应收币种 CNY`);
     console.log(`  汇兑差异: 类型=${exchangeDiff.diffType}, 金额=¥${exchangeDiff.diffAmount}`);
+
+    console.log('  验证CNY应收单2按本位币冲减 ...');
+    const cnyRecAfter2 = service.getReceivableList();
+    const ar6 = cnyRecAfter2.find(r => r.receivableNo === 'AR2025006');
+    assert(ar6.status === 'partial', 'AR2025006 应为部分认领 (本位币 ¥36,100 < ¥36,250)');
+    assert(ar6.claimedBaseAmount === '36100.00', 'AR2025006 已认领本位币应为 ¥36,100');
+    console.log(`  AR2025006 状态: ${ar6.status}, 已认领(本位币): ¥${ar6.claimedBaseAmount}, 剩余(本位币): ¥${ar6.remainingBaseAmount}`);
 
     console.log('  查询汇兑差异列表 ...');
     const diffList = service.getExchangeDiffList({ status: 'pending' });
@@ -377,31 +390,31 @@ async function runTests() {
     console.log(`  汇兑差异处理完成: ${processedDiff.processResult}`);
     console.log('');
 
-    console.log('【场景十六】多币种 - 对账导出');
+    console.log('【场景十六】多币种 - 对账导出（含跨币种字段）');
     console.log('  导出多币种对账记录 ...');
     const fxExp = service.exportReconciliation({ operator: 'finance_01' });
     const fxRecords = fxExp.records.filter(r => r.receiptCurrency === 'USD');
     assert(fxRecords.length >= 2, '应至少有2条 USD 记录');
-    const fxRecord = fxRecords.find(r => r.exchangeDiffAmount !== null && r.exchangeDiffAmount !== '0.00');
-    assert(fxRecord, '应有包含汇兑差异的记录');
-    assert(fxRecord.receiptCurrency === 'USD', '币种字段应存在');
-    assert(fxRecord.exchangeRate, '汇率字段应存在');
-    assert(fxRecord.baseAmount, '本位币金额字段应存在');
-    assert(fxRecord.exchangeDiffAmount, '汇兑差异金额字段应存在');
-    assert(fxRecord.diffProcessedBy === 'finance_manager', '差异处理人字段应存在');
-    assert(fxRecord.diffProcessResult, '差异处理结果字段应存在');
+    const crossRecord = fxRecords.find(r => r.receivableCurrency === 'CNY' && r.exchangeDiffAmount !== null && r.exchangeDiffAmount !== '0.00');
+    assert(crossRecord, '应有 USD→CNY 跨币种含汇兑差异的记录');
+    assert(crossRecord.receiptCurrency === 'USD', '回单币种应为 USD');
+    assert(crossRecord.receivableCurrency === 'CNY', '应收币种应为 CNY');
+    assert(crossRecord.claimAmount === '5000.00', '原币金额应为 $5,000');
+    assert(crossRecord.exchangeRate === '7.2500', '汇率应为 7.2500');
+    assert(crossRecord.baseAmount === '36100.00', '本位币金额应为 ¥36,100');
+    assert(crossRecord.exchangeDiffAmount, '汇兑差异金额字段应存在');
+    assert(crossRecord.diffProcessedBy === 'finance_manager', '差异处理人应为 finance_manager');
+    assert(crossRecord.diffProcessResult, '差异处理结果字段应存在');
+    assert(crossRecord.receivableBaseAmount, '应收本位币金额字段应存在');
     console.log(`  导出记录字段验证:`);
-    console.log(`    原币金额: ${fxRecord.claimAmount} ${fxRecord.claimCurrency}`);
-    console.log(`    汇率: ${fxRecord.exchangeRate}`);
-    console.log(`    本位币金额: ¥${fxRecord.baseAmount}`);
-    console.log(`    汇兑差异: ¥${fxRecord.exchangeDiffAmount} (${fxRecord.exchangeDiffType})`);
-    console.log(`    差异处理人: ${fxRecord.diffProcessedBy}`);
-    console.log(`    差异处理结果: ${fxRecord.diffProcessResult}`);
-    assert(Number(fxRecord.exchangeDiffAmount) === -100, '汇兑差异金额应为 -100');
-    assert(fxRecord.diffProcessedBy === 'finance_manager', '差异处理人应为 finance_manager');
-    assert(fxRecord.receiptCurrency === 'USD', '币种字段应为 USD');
-    assert(fxRecord.exchangeRate === '7.2400', '汇率字段应为 7.2400');
-    assert(fxRecord.baseAmount === '36100.00', '本位币金额应为 36100.00');
+    console.log(`    原币金额: $${crossRecord.claimAmount} (${crossRecord.claimCurrency})`);
+    console.log(`    汇率: ${crossRecord.exchangeRate}`);
+    console.log(`    本位币金额: ¥${crossRecord.baseAmount}`);
+    console.log(`    应收原币金额: ¥${crossRecord.receivableAmount} (${crossRecord.receivableCurrency})`);
+    console.log(`    应收本位币金额: ¥${crossRecord.receivableBaseAmount}`);
+    console.log(`    汇兑差异: ¥${crossRecord.exchangeDiffAmount} (${crossRecord.exchangeDiffType})`);
+    console.log(`    差异处理人: ${crossRecord.diffProcessedBy}`);
+    console.log(`    差异处理结果: ${crossRecord.diffProcessResult}`);
     console.log('');
 
     console.log('【场景十七】多币种 - 重启后数据一致性验证');
@@ -411,17 +424,25 @@ async function runTests() {
     const diffsAfterFx = service3.getExchangeDiffList();
     const fxClaimsAfter = service3.getClaimDetails({ batchNo: fxBatch.batchNo });
     const exportsAfterFx = service3.getExportList();
+    const receivablesAfterFx = service3.getReceivableList();
     assert(ratesAfterFx.length >= 1, '重启后汇率记录应保持');
     assert(diffsAfterFx.length >= 1, '重启后汇兑差异记录应保持');
     assert(fxClaimsAfter.length >= 2, '重启后多币种认领记录应保持');
     assert(exportsAfterFx.length >= 2, '重启后导出记录应保持');
     const processedDiffAfter = diffsAfterFx.find(d => d.diffId === exchangeDiff.diffId);
     assert(processedDiffAfter.status === 'processed', '重启后汇兑差异处理状态应保持');
-    console.log('  ✅ 重启后数据一致: 汇率、认领、汇兑差异、导出记录全部保留');
+    const ar5After = receivablesAfterFx.find(r => r.receivableNo === 'AR2025005');
+    assert(ar5After.status === 'paid', '重启后AR2025005应为已结清');
+    assert(ar5After.claimedBaseAmount === '72500.00', '重启后AR2025005已认领本位币应为 ¥72,500');
+    const crossClaimAfter = fxClaimsAfter.find(c => c.currency === 'USD' && c.receivableCurrency === 'CNY');
+    assert(crossClaimAfter, '重启后应有跨币种认领记录');
+    assert(crossClaimAfter.amount === '10000.00', '重启后认领原币金额应保持');
+    assert(crossClaimAfter.baseAmount === '72500.00', '重启后认领本位币金额应保持');
+    console.log('  ✅ 重启后数据一致: 汇率、认领、汇兑差异、导出记录、应收余额全部保留');
     console.log('');
 
     console.log('================================================');
-    console.log('  🎉 全部验收测试通过！(含多币种场景)');
+    console.log('  🎉 全部验收测试通过！(含多币种跨币种场景)');
     console.log('================================================\n');
 
     return true;
